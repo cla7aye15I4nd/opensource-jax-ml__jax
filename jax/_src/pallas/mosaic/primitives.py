@@ -1692,10 +1692,7 @@ def annotate(
     if not isinstance(jax_core.typeof(ref), state.AbstractRef):
       raise TypeError(f"ref must be a reference, got {ref}")
     ref = state_types.TransformedRef(ref, transforms=())
-  underlying_aval = ref.ref.aval
-  assert isinstance(underlying_aval, state.AbstractRef)
-  memory_space = underlying_aval.memory_space
-  if isinstance(memory_space, pl_core.CoreMemorySpace):
+  if isinstance(memory_space := ref.memory_space, pl_core.CoreMemorySpace):
     memory_space = memory_space.memory_space
   if assumption.no_hazard or assumption.no_hazard_no_deps:
     if memory_space != tpu_core.MemorySpace.VMEM:
@@ -1712,3 +1709,43 @@ def annotate(
   return state_types.TransformedRef(
       ref.ref, (*new_transforms, tpu_core.AccessAssumptionTransform(assumption))
   )
+
+
+memory_space_is_p = jax_core.Primitive("memory_space_is")
+
+
+def has_memory_space(
+    ref: jax.Ref | state.TransformedRef, memory_space: tpu_core.MemorySpace
+) -> jax.Array:
+  """Returns a dynamic boolean indicating whether ``ref`` is in ``memory_space``.
+
+  Unlike ``ref.memory_space``, which returns the trace-time memory space
+  annotation, this primitive emits a delayed check that is resolved against
+  the physical memory space of ``ref`` at compilation time.
+
+  Use this with :func:`jax.lax.cond` or :func:`jax.experimental.pallas.when`
+  to specialize kernel branches for :data:`jax.experimental.pallas.ANY`
+  references.
+  """
+  ref, transforms = _get_ref_and_transforms(ref)
+  if jax.typeof(ref).memory_space is not pl_core.MemorySpace.ANY:
+    raise ValueError(
+        "Ref must have pl.ANY memory space, but got"
+        f" {jax.typeof(ref).memory_space}"
+    )
+  if memory_space is pl_core.MemorySpace.ANY:
+    raise ValueError(
+        "has_memory_space(..., pl.ANY) is not supported. Please specify a"
+        " concrete memory space."
+    )
+
+  flat_args, args_tree = tree_util.tree_flatten((ref, transforms))
+  return memory_space_is_p.bind(
+      *flat_args, args_tree=args_tree, memory_space=memory_space
+  )
+
+
+@memory_space_is_p.def_abstract_eval
+def _memory_space_is_abstract_eval(*avals, args_tree, memory_space):
+  del avals, args_tree, memory_space
+  return jax_core.ShapedArray((), jnp.bool_)

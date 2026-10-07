@@ -2204,6 +2204,22 @@ def _reshape_memref(
   )
 
 
+def _memory_space_cast_memref(
+    ref: ir.Value[ir.MemRefType],
+    caster: state_types.MemorySpaceCastTransform,
+    ref_block_shape: tuple[int | pallas_core.Squeezed, ...],
+) -> tuple[ir.Value, tuple[int | pallas_core.Squeezed, ...]]:
+  target_memory_space = _memory_space_to_mosaic_attribute(
+      caster.memory_space, tpu_core.CoreType.TC
+  )
+  target_ref_ty = ir.MemRefType.get(
+      ref.type.shape,
+      ref.type.element_type,
+      memory_space=target_memory_space,
+  )
+  return memref.memory_space_cast(target_ref_ty, ref), ref_block_shape
+
+
 def _transform_ref(ref, ref_ty, ref_block_shape, transforms=()):
   # Unwrap the refs if they are TransformedRefs.
   if transforms == () and isinstance(ref, state.TransformedRef):
@@ -2228,6 +2244,10 @@ def _transform_ref(ref, ref_ty, ref_block_shape, transforms=()):
       case state_types.ReshapeTransform():
         ref, ref_block_shape = _reshape_memref(
             ref, transform, ref_ty, ref_block_shape
+        )
+      case state_types.MemorySpaceCastTransform():
+        ref, ref_block_shape = _memory_space_cast_memref(
+            ref, transform, ref_block_shape
         )
       case state_types.SelectTransform():
         raise NotImplementedError(
@@ -2261,6 +2281,22 @@ def _transform_ref(ref, ref_ty, ref_block_shape, transforms=()):
         no_hazard_no_deps=assumption.no_hazard_no_deps,
     )
   return ref, ref_block_shape
+
+
+@register_lowering_rule(
+    tpu_primitives.memory_space_is_p, ensure_mlir_values=False
+)
+def _memory_space_is_lowering_rule(
+    ctx: LoweringRuleContext, *args_flat, args_tree, memory_space
+):
+  ref, transforms = args_tree.unflatten(args_flat)
+  ref_aval, _ = args_tree.unflatten(ctx.avals_in)
+  target_memory_space = _memory_space_to_mosaic_attribute(
+      memory_space, ctx.lowering_context.kernel_type
+  )
+  ref_block_shape, *_ = ctx.block_shapes
+  ref, _ = _transform_ref(ref, ref_aval, ref_block_shape, transforms)
+  return tpu.memref_memory_space_is(ref, target_memory_space)
 
 
 @dataclasses.dataclass(frozen=True)
