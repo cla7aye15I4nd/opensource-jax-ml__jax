@@ -545,6 +545,51 @@ class InterpretTest(jtu.JaxTestCase):
       self.assertTrue(np.isnan(out[2:, :]).all())
       self.assertTrue(np.isnan(out[:, 22:]).all())
 
+  def test_padded_buffer_bounds_in_a_kernel_that_runs_asynchronously(self):
+    # The padding depends on the TPU that the tracing context targets. A kernel
+    # dispatched while the CPU device is busy runs later, on another thread.
+    def kernel(i_ref, j_ref, x_ref, o_ref, s_ref):
+      # On TPU v6e, the padded shape of the (10, 150) scratch is (16, 256).
+      rows = pl.ds(pl.multiple_of(i_ref[0], 8), 8)
+      lanes = pl.ds(pl.multiple_of(j_ref[0], 128), 128)
+      s_ref[rows, lanes] = x_ref[...]
+      o_ref[...] = s_ref[rows, lanes]
+
+    @jax.jit
+    def f(i, j, x):
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+          scratch_shapes=[pltpu.VMEM((10, 150), jnp.float32)],
+          interpret=pltpu.InterpretParams(
+              buffer_bounds='padded', out_of_bounds_reads='uninitialized'
+          ),
+      )(i, j, x)
+
+    @jax.jit
+    def slow(a):
+      for _ in range(16):
+        a = jnp.tanh(a @ a)
+      return a
+
+    a = jnp.full((1024, 1024), 1e-4, jnp.float32)
+    i = jnp.array([8], jnp.int32)
+    j = jnp.array([128], jnp.int32)
+    x = jnp.ones((8, 128), dtype=jnp.float32)
+    abstract_mesh = jax.sharding.AbstractMesh(
+        (), (), abstract_device=jax.sharding.AbstractDevice('TPU v6e', 1, 'tpu')
+    )
+    with jax.sharding.use_abstract_mesh(abstract_mesh):
+      jax.block_until_ready(f(i, j, x))  # Compiles `f` while the device idles.
+    jax.block_until_ready(slow(a))
+
+    slow(a)  # Keeps the device busy, so that `f` runs asynchronously.
+    with jax.sharding.use_abstract_mesh(abstract_mesh):
+      out = f(i, j, x).block_until_ready()
+    np.testing.assert_array_equal(out[:2, :22], 1.0)
+    self.assertTrue(np.isnan(out[2:, :]).all())
+    self.assertTrue(np.isnan(out[:, 22:]).all())
+
   def test_scalar_prefetch_example(self):
     def dynamic_slice_kernel(indices, x_ref, o_ref):
       del indices
