@@ -990,6 +990,64 @@ def MosaicGPU_WarpMapOp : Op<MosaicGPU_Dialect, "warp_map",
   let hasVerifier = 1;
 }
 
+def MosaicGPU_OptionalAlignmentParam :
+    OptionalParameter<"::mlir::IntegerAttr", "optional byte alignment">,
+    AttrConstraint<
+        Or<[IsNullAttr.predicate, IntValidAlignment<I64Attr>.predicate]>,
+        IntValidAlignment<I64Attr>.summary> {
+  let printer = "$_printer.printAttributeWithoutType($_self);";
+}
+
+def MosaicGPU_SmemAllocAttr : MosaicGPU_Attr<"SmemAlloc", "smem_alloc"> {
+  let summary = "Attributes for a scoped SMEM allocation.";
+  let parameters = (ins MosaicGPU_OptionalAlignmentParam:$alignment);
+  let assemblyFormat = "(`<` `alignment` `=` $alignment^ `>`)?";
+}
+
+def MosaicGPU_RunScopedReturnOp : Op<MosaicGPU_Dialect, "run_scoped.return",
+    [Pure, ReturnLike, Terminator, HasParent<"RunScopedOp">]> {
+  let summary = "Terminator for the region in a `RunScopedOp`";
+  let description = [{
+    The `run_scoped.return` op is a terminator that indicates the end of
+    execution within a `RunScopedOp` region. It can optionally return some
+    values, which become the results of the parent `RunScopedOp`.
+
+    The declared results of the parent `RunScopedOp` must match the operand
+    types of this op.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$operands);
+  let assemblyFormat = [{ attr-dict ($operands^ `:` type($operands))? }];
+  let builders = [OpBuilder<(ins), [{
+    build($_builder, $_state, ::mlir::ValueRange());
+  }]>];
+  let hasVerifier = 1;
+}
+
+def MosaicGPU_RunScopedOp : Op<MosaicGPU_Dialect, "run_scoped",
+    [SingleBlockImplicitTerminator<"RunScopedReturnOp">]> {
+  let summary = "Evaluates a region with scoped allocations.";
+  let description = [{
+    Evaluates a single-block region where block arguments represent scoped
+    allocations whose lifetimes are confined to the region.
+
+    Each block argument must be a statically shaped memref in SMEM, with a
+    corresponding `#mosaic_gpu.smem_alloc` entry in `buffer_attrs`.
+
+    The region may capture outer values and return results via
+    `mosaic_gpu.run_scoped.return`, provided that scoped references do not
+    escape the region.
+  }];
+
+  let arguments = (ins
+    ArrayAttr:$buffer_attrs
+  );
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$region);
+
+  let hasVerifier = 1;
+}
+
 def MosaicGPU_WithTransformsOp : Op<MosaicGPU_Dialect, "with_transforms",
     [SameOperandsAndResultType, Pure]> {
   let summary = "A noop that allows manually setting transforms on a memref.";

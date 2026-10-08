@@ -23,6 +23,7 @@ name. Otherwise, MLIR is unable to find the module during dialect search.
 from jaxlib.mosaic.dialect.gpu._mosaic_gpu_gen_ops import *
 from jaxlib.mosaic.dialect.gpu import _mosaic_gpu_gen_ops
 from jaxlib.mosaic.dialect.gpu._mosaic_gpu_gen_enums import *
+from jaxlib.mlir._mlir_libs import _mosaic_gpu_ext
 from jaxlib.mlir._mlir_libs._mosaic_gpu_ext import *
 
 try:
@@ -68,3 +69,45 @@ class WarpMapOp(_mosaic_gpu_gen_ops.WarpMapOp):  # noqa: F405
 
 def warp_map(operands, *, loc=None, ip=None) -> WarpMapOp:
   return WarpMapOp(operands, loc=loc, ip=ip)
+
+
+@_cext.register_operation(_mosaic_gpu_gen_ops._Dialect, replace=True)
+class RunScopedOp(_mosaic_gpu_gen_ops.RunScopedOp):  # noqa: F405
+  """An extension to the automatically generated RunScopedOp bindings."""
+
+  def __init__(
+      self,
+      results=(),
+      buffer_types=(),
+      *,
+      buffer_attrs=None,
+      loc=None,
+      ip=None,
+  ):
+    if buffer_attrs is None:
+      buffer_attrs = [
+          _mosaic_gpu_ext.SmemAllocAttr.get() for _ in buffer_types
+      ]
+    super().__init__(results, buffer_attrs, loc=loc, ip=ip)
+    self.regions[0].blocks.append(*buffer_types)  # Append the block.
+
+  @property
+  def body(self):
+    return self.regions[0].blocks[0]
+
+
+def run_scoped(
+    results=(),
+    buffer_types=(),
+    *,
+    buffer_attrs=None,
+    loc=None,
+    ip=None,
+) -> RunScopedOp:
+  return RunScopedOp(
+      results=results,
+      buffer_types=buffer_types,
+      buffer_attrs=buffer_attrs,
+      loc=loc,
+      ip=ip,
+  )
